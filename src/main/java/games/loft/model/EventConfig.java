@@ -1,7 +1,7 @@
 /*
  * @Date: 2023-09-21 18:46:29
  * @LastEditors: MemoryShadow
- * @LastEditTime: 2023-09-25 21:59:37
+ * @LastEditTime: 2023-09-25 22:23:10
  * @Description: 一份对当前事件的配置
  * Copyright (c) 2023 by MemoryShadow@outlook.com, All Rights Reserved.
  */
@@ -12,7 +12,6 @@ import org.bukkit.event.entity.EntityEvent;
 
 import lombok.Getter;
 import lombok.Setter;
-import net.saralab.AntiExplosion;
 
 @Getter
 @Setter

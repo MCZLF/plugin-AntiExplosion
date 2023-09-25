@@ -4,7 +4,6 @@ import org.bukkit.event.*;
 import org.bukkit.event.entity.*;
 
 import games.loft.model.EventConfig;
-import net.saralab.AntiExplosion;
 
 public class Events implements Listener {
 
