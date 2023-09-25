@@ -1,0 +1,24 @@
+﻿global:
+  Hurt: true
+regions: 
+  - Enable: false
+    Hurt: true
+    Name: "Region 1"
+    World: "World"
+    Select:
+    - X: -88
+      Y: 0
+      Z: 187
+      ToX: -105
+      ToY: 255
+      ToZ: 63
+  - Enable: false
+    Name: "Region 2"
+    World: "World"
+    Select:
+    - X: -164
+      Y: 0
+      Z: 219
+      ToX: -146
+      ToY: 255
+      ToZ: 202
