@@ -1,7 +1,7 @@
 /*
  * @Date: 2023-09-21 18:46:29
  * @LastEditors: MemoryShadow
- * @LastEditTime: 2023-09-26 10:22:36
+ * @LastEditTime: 2023-10-15 12:55:08
  * @Description: 一份对当前事件的配置
  * Copyright (c) 2023 by MemoryShadow@outlook.com, All Rights Reserved.
  */
@@ -12,6 +12,7 @@ import org.bukkit.event.entity.EntityEvent;
 
 import lombok.Getter;
 import lombok.Setter;
+import net.saralab.AntiExplosion;
 
 @Getter
 @Setter
@@ -53,23 +54,24 @@ public class EventConfig {
             this.Enable = config.isEnable();
             this.Hurt = config.isHurt();
         }
-        // 检查事件是否与配置文件中的事件相匹配, 取消掉不匹配的事件
-        switch (e.getEventName()) {
-            case "EntityExplodeEvent":
-                if (!this.Hurt) {
-                    this.Enable = false;
-                    return;
-                }
-                break;
+        /**检查事件是否与配置文件中的事件相匹配, 取消掉不匹配的事件
+         * 规则如下:
+         *  如果事件是EntityExplodeEvent, 但是配置文件中的Hurt为false, 就取消掉这个事件
+         *  如果事件是ExplosionPrimeEvent, 但是配置文件中的Hurt为true, 就取消掉这个事件
+         */
+        if (
+            (e.getEventName().equals("EntityExplodeEvent") && !this.Hurt) ||
+            (e.getEventName().equals("ExplosionPrimeEvent") && this.Hurt)
+            ) this.Enable = false;
+        if (this.Enable)
+            AntiExplosion.getPlugin().getLogger().info("BoomEvent: " + this.toString() + "\n Region: " + (config != null ? config.getName() : "global"));
+        else
+            AntiExplosion.getPlugin().getLogger().info("AntiExplosion Cancelled" + ". Region: " + (config != null ? config.getName() : "global"));
+    }
 
-            case "ExplosionPrimeEvent":
-                if (this.Hurt) {
-                    this.Enable = false;
-                    return;
-                }
-                break;
-            default:
-                return;
-        }
+    public String toString() {
+        return "EventConfig:\n  Enable: " + this.Enable +
+                "\n  Hurt: " + this.Hurt +
+                "\n  Loc: " + this.X + ", " + this.Y + ", " + this.Z ;
     }
 }
