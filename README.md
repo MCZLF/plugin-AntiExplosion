@@ -23,7 +23,7 @@
 
 本项目的初始源代码是在由 Sanityko 授权后逆向而来, 可能初代构建物会与原项目发行的二进制文件hash有所不同, 但行为我们确保是一致的.
 
-点击查看[原始插件发布页](https://www.mcbbs.net/forum.php?mod=viewthread&tid=501794 "点击查看")
+点击查看[原始插件发布页的归档](https://archive.mcbbs.run/501794.html "点击查看")
 
 ## 我们修改了什么?
 
