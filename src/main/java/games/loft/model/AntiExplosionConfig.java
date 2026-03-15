@@ -1,14 +1,17 @@
 /*
  * @Date: 2023-09-25 14:50:54
  * @LastEditors: MemoryShadow
- * @LastEditTime: 2023-09-25 22:05:37
- * @Description: AntiExplosion的配置处理类
+ * @LastEditTime: 2026-03-15 17:00:00
+ * @Description: AntiExplosion configuration handler with chunk-based spatial index
  * Copyright (c) 2023 by MemoryShadow@outlook.com, All Rights Reserved.
  */
 package games.loft.model;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.bukkit.configuration.file.FileConfiguration;
 
@@ -19,6 +22,14 @@ import net.saralab.AntiExplosion;
 public class AntiExplosionConfig {
 
     private static AntiExplosionConfig live = null;
+
+    /**
+     * L1 cache: stores the last successfully matched Cluster to accelerate
+     * consecutive lookups during chain explosions (spatial locality).
+     * Marked volatile to ensure cross-thread visibility on the main server thread.
+     */
+    private static volatile Cluster lastHitCache = null;
+
     @Getter
     @Setter
     private boolean Enable = true;
@@ -30,9 +41,17 @@ public class AntiExplosionConfig {
     private ArrayList<Cluster> regions = new ArrayList<Cluster>();
 
     /**
-     * 当存在实例时就返回已存在的实例, 否则创建新的实例
-     * 
-     * @return 一个AntiExplosionConfig实例
+     * L2 index: chunk-based spatial hash map.
+     * Key = packed chunk coordinate (chunkX << 32 | chunkZ).
+     * Value = list of Clusters whose bounding boxes overlap this chunk.
+     */
+    private HashMap<Long, List<Cluster>> chunkIndex = new HashMap<Long, List<Cluster>>();
+
+    /**
+     * Return the existing singleton instance, or create a new one from the
+     * plugin's default config if none exists yet.
+     *
+     * @return an AntiExplosionConfig instance
      */
     public static AntiExplosionConfig GetAntiExplosionConfig() {
         if (live != null) {
@@ -43,9 +62,10 @@ public class AntiExplosionConfig {
     }
 
     /**
-     * 当存在实例时就返回已存在的实例, 否则按照目标对象创建新的实例
-     * 
-     * @return 一个AntiExplosionConfig实例
+     * Return the existing singleton instance, or create a new one from the
+     * given FileConfiguration if none exists yet.
+     *
+     * @return an AntiExplosionConfig instance
      */
     public static AntiExplosionConfig GetAntiExplosionConfig(FileConfiguration config) {
         if (live != null) {
@@ -67,14 +87,16 @@ public class AntiExplosionConfig {
         this.Enable = config.getBoolean("global.Enable", true);
         this.Hurt = config.getBoolean("global.Hurt", true);
         for (Object region_Object : config.getList("regions")) {
+            @SuppressWarnings("unchecked")
             LinkedHashMap<String, ?> region = (LinkedHashMap<String, ?>) region_Object;
-            boolean Enable = region.containsKey("Enable") ? (boolean) region.get("Enable") : this.Enable;
-            boolean Hurt = region.containsKey("Hurt") ? (boolean) region.get("Hurt") : this.Hurt;
+            boolean Enable = region.containsKey("Enable") ? (Boolean) region.get("Enable") : this.Enable;
+            boolean Hurt = region.containsKey("Hurt") ? (Boolean) region.get("Hurt") : this.Hurt;
 
-            // 将配置写入到选区中
+            // Parse precinct selections from config
             ArrayList<Precinct3d> precinct3ds = new ArrayList<Precinct3d>();
-            for (LinkedHashMap<String, Integer> Select : (ArrayList<LinkedHashMap<String, Integer>>) region
-                    .get("Select")) {
+            @SuppressWarnings("unchecked")
+            ArrayList<LinkedHashMap<String, Integer>> selectList = (ArrayList<LinkedHashMap<String, Integer>>) region.get("Select");
+            for (LinkedHashMap<String, Integer> Select : selectList) {
                 precinct3ds.add(new Precinct3d(
                         Select.get("X"),
                         Select.get("Y"),
@@ -87,44 +109,112 @@ public class AntiExplosionConfig {
                     precinct3ds);
             this.regions.add(cluster);
         }
+
+        // Build the chunk-based spatial index after all regions are loaded
+        buildIndex();
+
+        // Fix: assign singleton reference so subsequent calls reuse this instance
+        live = this;
     }
 
     /**
-     * 检查给定坐标是否在本选区内
+     * Build the L2 chunk-based spatial index.
+     * For each Precinct3d in every Cluster, compute all chunk coordinates
+     * covered by the bounding box (XZ plane) and register the Cluster
+     * reference into the corresponding hash bucket.
      */
-    public boolean isInside(int X, int Y, int Z) {
+    private void buildIndex() {
+        chunkIndex.clear();
         for (Cluster cluster : regions) {
-            if (cluster.isInside(X, Y, Z)) {
-                return true;
+            for (Precinct3d precinct : cluster.getSelect()) {
+                // Calculate chunk coordinate range covered by this precinct (XZ plane)
+                int minCX = precinct.getX() >> 4;
+                int maxCX = precinct.getToX() >> 4;
+                int minCZ = precinct.getZ() >> 4;
+                int maxCZ = precinct.getToZ() >> 4;
+                for (int cx = minCX; cx <= maxCX; cx++) {
+                    for (int cz = minCZ; cz <= maxCZ; cz++) {
+                        long key = packChunkKey(cx, cz);
+                        chunkIndex.computeIfAbsent(key, k -> new ArrayList<>()).add(cluster);
+                    }
+                }
             }
         }
-        return false;
     }
 
     /**
-     * 非贪婪模式检查点是否在选区内
-     * 
-     * @return 当匹配成功将返回一个Cluster对象, 否则返回null
+     * Pack two chunk coordinates into a single long key.
+     * Upper 32 bits = chunkX, lower 32 bits = chunkZ (unsigned).
+     */
+    private static long packChunkKey(int chunkX, int chunkZ) {
+        return (long) chunkX << 32 | (chunkZ & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Check whether the given coordinate falls inside any registered region.
+     */
+    public boolean isInside(int X, int Y, int Z) {
+        return valueOf(X, Y, Z) != null;
+    }
+
+    /**
+     * Non-greedy search: find the first Cluster that contains the given point.
+     * Search order: L1 cache -> L2 chunk index -> null (global fallback).
+     *
+     * @return the matching Cluster, or null if no region contains the point
      */
     public Cluster valueOf(int X, int Y, int Z) {
-        for (Cluster cluster : regions) {
-            if (cluster.isInside(X, Y, Z))
+        // L1 cache: check the last successfully hit Cluster first
+        Cluster cached = lastHitCache;
+        if (cached != null && cached.isInside(X, Y, Z)) {
+            return cached;
+        }
+
+        // L2 index: narrow candidates down to the target chunk
+        long key = packChunkKey(X >> 4, Z >> 4);
+        List<Cluster> candidates = chunkIndex.get(key);
+        if (candidates == null) {
+            return null;
+        }
+
+        // Precise AABB check on the narrowed candidate set
+        for (Cluster cluster : candidates) {
+            if (cluster.isInside(X, Y, Z)) {
+                // Update L1 cache for subsequent chain explosions
+                lastHitCache = cluster;
                 return cluster;
+            }
         }
         return null;
     }
 
     /**
-     * 贪婪模式检查点是否在选区内
-     * 
-     * @return 返回一个Cluster列表
+     * Greedy search: find ALL Clusters that contain the given point.
+     * Uses L2 chunk index to narrow candidates before precise checks.
+     *
+     * @return a list of matching Clusters (may be empty, never null)
      */
     public ArrayList<Cluster> valueOf(int X, int Y, int Z, boolean voracity) {
-        ArrayList<Cluster> RetObj = new ArrayList<Cluster>();
-        for (Cluster cluster : regions) {
-            if (cluster.isInside(X, Y, Z))
-                RetObj.add(cluster);
+        ArrayList<Cluster> result = new ArrayList<Cluster>();
+
+        // L2 index: narrow candidates down to the target chunk
+        long key = packChunkKey(X >> 4, Z >> 4);
+        List<Cluster> candidates = chunkIndex.get(key);
+        if (candidates == null) {
+            return result;
         }
-        return RetObj;
+
+        // Precise AABB check on the narrowed candidate set
+        for (Cluster cluster : candidates) {
+            if (cluster.isInside(X, Y, Z)) {
+                result.add(cluster);
+            }
+        }
+
+        // Update L1 cache with the first match if available
+        if (!result.isEmpty()) {
+            lastHitCache = result.get(0);
+        }
+        return result;
     }
 }
